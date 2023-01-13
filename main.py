@@ -1,174 +1,133 @@
-import csv
+import os
+import sys
 import time
-import random
-import tracemalloc
 
-import numpy as np
-from memory_profiler import profile, memory_usage
-global top_stats
-
-# Load matrix of path costs from txt data file
-def load_graph(filename):
-    datafile = open(filename, "r")
-    lines = datafile.read().splitlines()
-    matrix = []
-    for i in range(1, len(lines)):
-        matrix.append(list(map(int, lines[i].split())))
-    datafile.close()
-    return matrix
+from src.data_controller import read_matrix, load_config
+from src.calculator import run_test
+from src.logger import Logger
 
 
-def load_initialization_file(filename):
-    init_file = open(filename, "r")
-    configuration = init_file.read().splitlines()
-    init_file.close()
-    return configuration
+def main(file, optimal_solution, temp, cooling_rate, cooling_type, eras_number, era_length, solution_in_neighbourhood,
+         cfg: dict = None):
+    if file:
+        cfg = {'Temperature': temp,
+               'Minimal_temperature': 0.0001,
+               'Cooling_Rate': cooling_rate,
+               'Eras': eras_number,
+               'Era_length': era_length,
+               'Solution_in_neighbourhood': solution_in_neighbourhood,
+               'Cooling_Type': cooling_type,
+               'Data': file,
+               'Results': 'results.csv',
+               'Precision': 4,
+               'Solution': optimal_solution,
+               'Repeats': 3}
+
+        output = run_solve(cfg)
+        save_to_file(cfg, output)
+    else:
+        if cfg is None:
+            cfg = load_config()
+
+        output = run_solve(cfg)
+        save_to_file(cfg, output)
 
 
-# Function to calculate the total distance of the path
-def calculate_distance(solution, graph):
-    dist = 0
-    for i in range(len(solution)):
-        if i != len(solution) - 1:
-            dist += graph[solution[i], solution[i + 1]]
-        else:
-            dist += graph[solution[i], solution[0]]
-    return dist
+def run_solve(cfg: dict):
+    print('[OK] Rozwiazywanie\n')
+
+    repeats = cfg['Repeats']
+    matrix = read_matrix(f'{"./input"}/{cfg["Data"]}')
+
+    outputs = []
+    for i in range(repeats):
+        if i > 1: print(f'[{i + 1}/{repeats}]      ', end='\r')
+        outputs.append(run_test(matrix, cfg))
+
+    final_output = get_output_struct(cfg)
+
+    for output in outputs:
+        final_output['time'] += output['time']
+        final_output['memory_usage'] += output['memory_usage']
+
+        solution = output['solution']
+        if solution < final_output['solution']:
+            final_output['solution'] = solution
+            final_output['path'] = output['path']
+
+    final_output['accuracy'] = round(cfg["Solution"] / final_output["solution"] * 100)
+    final_output['time'] = str(round(final_output['time'] / repeats / 1_000_000, cfg['Precision'])).replace('.', ',')
+    final_output['memory_usage'] = str(round(final_output['memory_usage'] / repeats, cfg['Precision'])).replace('.',
+                                                                                                                ',')
+
+    print_results(final_output, cfg)
+    return final_output
 
 
-# Function to generate a random solution
-def random_solution(graph):
-    solution = [i for i in range(len(graph))]
-    random.shuffle(solution)
-    return solution
+def get_output_struct(cfg):
+    return {
+        'input_file': cfg['Data'],
+        'repeats': cfg['Repeats'],
+        'solution': float('inf'),
+        'accuracy': 0,
+        'path': (),
+        'temp': cfg['Temperature'],
+        'cooling_rate': cfg['Cooling_Rate'],
+        'solution_in_neighbourhood': cfg['Solution_in_neighbourhood'],
+        'cooling_type': cfg['Cooling_Type'],
+        'eras': cfg['Eras'],
+        'length_of_era': cfg['Era_length'],
+        'time': 0,
+        'memory_usage': 0
+    }
 
 
-# Function to generate a neighbour by switching the position of two randomly selected cities
-def neighbour(solution):
-    neighbour = solution[:]
-    x, y = random.sample(range(len(neighbour)), 2)
-    neighbour[x], neighbour[y] = neighbour[y], neighbour[x]
-    return neighbour
+def print_results(final_output: dict, cfg: dict):
+    print('Rozwiazanie: ', final_output['solution'])
+    print('Sciezka: ', final_output['path'])
+
+    if cfg['Solution'] is not None:
+        print(f'\nDokladnosc: {final_output["accuracy"]}%')
+    print(f'Czas: {final_output["time"]}ms')
+    print(f'Uzycie pamieci: {final_output["memory_usage"]}MB')
 
 
-# Function to run the simulation
-#@profile
-def simulated_annealing(temp, cooling_rate, iterations, graph):
-    solution = random_solution(graph)
-    best_solution = solution  # [:]
-    for i in range(iterations):
-        new_solution = neighbour(solution)
-        random_solution_distance = calculate_distance(solution, graph)
-        best_distance = calculate_distance(best_solution, graph)
-
-        delta = calculate_distance(new_solution, graph) - random_solution_distance
-
-        # If solution is worse or probability is very high
-        if delta < 0 or random.random() < np.exp(-delta / temp):
-            solution = new_solution  # [:]
-        if random_solution_distance < best_distance:
-            best_solution = solution  # [:]
-        temp *= (1 - cooling_rate)
-    return best_solution
+def save_to_file(cfg: dict, output: dict):
+    logger = Logger('./output', cfg['Results'])
+    logger.log(output)
 
 
-def test_algorithm(configuration):
-    with open(configuration[len(configuration) - 1], 'w', newline='') as csvfile:
-        writer = csv.writer(csvfile)
-        writer.writerow(['time [ns]', 'correct result', 'memory used'])
-    tracemalloc.start()
-    for testing_case in range(len(configuration) - 1):
-        with open(configuration[len(configuration) - 1], 'a', newline='') as csvfile:
-            writer = csv.writer(csvfile)
-            writer.writerow([configuration[testing_case]])
-        testing_case_data = configuration[testing_case].split()
-        file_name = testing_case_data[0]
-        number_of_tests = int(testing_case_data[1])
-        min_path_weight = int(testing_case_data[2])
+if __name__ == '__main__':
+    test_list = []
+    if os.path.exists("output/results.csv"):
+        os.remove("output/results.csv")
 
+    temp, cooling_rate, cooling_type, eras_number, era_length, solution_in_neighbourhood = None, None, None, None, None, None
 
-        if file_name == "tsp_6_1.txt" or file_name == "tsp_6_2.txt":
-            for test in range(number_of_tests):
-                twenty_repetitions_time = 0
-                for repetition in range(20):
-                    start = time.time_ns()
+    # data_files_list = ["tsp_6_1.txt", "tsp_6_2.txt", "tsp_10.txt", "tsp_12.txt", "tsp_13.txt", "tsp_14.txt"]
+    data_files_list = ["tsp_17.txt", "bays29.tsp", "rat99.tsp", "si175.tsp"]
+    # optimal_solutions_list = [132, 80, 212, 264, 269, 282]
+    optimal_solutions_list = [39, 2020, 1211, 21407]
 
-                    graph = np.array(load_graph("TestData/" + file_name))
+    temperatures_list = [40, 100, 1000]
+    cooling_rate_list = [0.90, 0.94, 0.99]
+    eras_number_list = [200, 500, 10000]
+    era_length_list = [1, 2, 50]
+    solutions_in_neighbourhood_list = ["2swaps", "arc"]
+    cooling_type_list = ["Geometrical", "Boltzmann"]
 
-                    best_solution = simulated_annealing(35, 0.001, 5000, graph)
-                    distance = calculate_distance(best_solution, graph)
-                    print("Best solution: ", best_solution)
-                    print("Distance: ", distance)
+    # for i in range(len(data_files_list)):
+    #     for temp in temperatures_list:
+    #         for cooling_type in cooling_type_list:
+    #             for eras_number in eras_number_list:
+    #                 for era_length in era_length_list:
+    #                     for solution_in_neighbourhood in solutions_in_neighbourhood_list:
+    #                         for cooling_rate in cooling_rate_list:
+    #                             main(data_files_list[i], optimal_solutions_list[i], temp, cooling_rate,
+    #                                  cooling_type, eras_number, era_length, solution_in_neighbourhood)
+    # sys.exit('\n[OK] Done')
 
-                    # optimized_graph, cost_of_graph = optimize_graph(load_graph("TestData/" + file_name))
-                    # counted_min_path_weight, counted_path = find_path(optimized_graph, cost_of_graph)
-                    # TODO
-
-                    print("Analyzing " + file_name + "...")
-
-                    if distance == min_path_weight:
-                        print("Good job, that's right.")
-                        correct = "tak"
-                    else:
-                        print("The algorithm is wrong. Check the minimal path weight.")
-                        correct = "nie"
-
-                    # if counted_path == min_path:
-                    #     print("Good job, that's right.")
-                    # else:
-                    #     print("The algorithm is wrong. Check the minimal path")
-
-                    end = time.time_ns()
-                    twenty_repetitions_time += end - start
-                with open(configuration[len(configuration) - 1], 'a', newline='') as csvfile:
-                    writer = csv.writer(csvfile)
-                    writer.writerow([str(twenty_repetitions_time), correct])
-        else:
-            for test in range(number_of_tests):
-                print("kupa" + str(memory_usage()))
-                operation_time = 0
-                start = time.time_ns()
-
-                graph = np.array(load_graph("TestData/" + file_name))
-
-                # tracemalloc.start()
-                best_solution = simulated_annealing(35, 0.001, 5000, graph)
-                distance = calculate_distance(best_solution, graph)
-                current, peak = tracemalloc.get_traced_memory()
-                #print(f"Currentttttttttttt memory usage is {current / 10 ** 6}MB; Peak was {peak / 10 ** 6}MB")
-                # print("AAAAAAAAAAAAAAAAAA")
-                # print(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
-                # tracemalloc.stop()
-
-
-
-                print("Best solution: ", best_solution)
-                print("Distance: ", distance)
-
-                print("Analyzing " + file_name + "...")
-
-                if distance == min_path_weight:
-                    print("Good job, that's right.")
-                    correct = "tak"
-                else:
-                    print("The algorithm is wrong. Check the minimal path weight.")
-                    correct = "nie"
-
-                end = time.time_ns()
-                operation_time += end - start
-                with open(configuration[len(configuration) - 1], 'a', newline='') as csvfile:
-                    writer = csv.writer(csvfile)
-                    writer.writerow([str(operation_time), correct])
-        snapshot = tracemalloc.take_snapshot()
-        global top_stats
-        top_stats = snapshot.statistics('lineno')
-
-
-if __name__ == "__main__":
-    configuration = load_initialization_file("init.ini")
-    test_algorithm(configuration)
-    print("dupa" + str(memory_usage()))
-    print("[ Top 10 ]")
-    global top_stats
-    for stat in top_stats: # [:10]:
-        print(stat.size)
+    main(None, None, None, None, None, None, None, None)
+    print("Koniec")
+    time.sleep(10000)
+    # sys.exit('\n[OK] Done')

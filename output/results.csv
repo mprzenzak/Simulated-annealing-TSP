@@ -1,0 +1,2 @@
+instancja	najmniejszy_koszt.	dokladnosc [%]	czas [ms]	zuzycie_pamieci [MB]	naj_sciezka	temperatura_poczatkowa	Sposob_chlodzenia	Wspolczynnik_chlodzenia	Liczba_epok	Dlugosc_epoki	Przeszukiwanie_sasiedztwa	
+tsp_17.txt	50	78	24,6259	35,7949	(0, 2, 13, 12, 16, 4, 3, 6, 15, 14, 5, 7, 8, 11, 10, 9, 1, 0)	100	Geometrical	0.99	100	50	2swaps	
